@@ -1,10 +1,18 @@
+from pathlib import Path
+from uuid import uuid4
+
 from celery.result import AsyncResult
-from fastapi import FastAPI
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.config import settings
+from api.jobs import create_job, get_job
 from stages.celery_app import celery_app
+from stages.ingest_task import process_video
 from stages.test_task import add_numbers
+
+# Video formats we currently accept for ingest.
+ALLOWED_VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
 
 # FastAPI application instance.
 app = FastAPI(title="Video Understanding RAG API")
@@ -39,3 +47,38 @@ def get_test_task(task_id: str):
     if async_result.ready():
         payload["result"] = async_result.result
     return payload
+
+
+@app.post("/ingest")
+async def ingest_video(file: UploadFile = File(...)):
+    """Accept a video upload, save it to disk, and queue a background job."""
+    original_filename = Path(file.filename or "").name
+    suffix = Path(original_filename).suffix.lower()
+    if suffix not in ALLOWED_VIDEO_SUFFIXES:
+        raise HTTPException(
+            status_code=400,
+            detail="Filename must end in .mp4, .mov, .mkv, or .webm.",
+        )
+
+    job_id = str(uuid4())
+
+    uploads_dir = Path("data/raw/uploads")
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    file_path = uploads_dir / f"{job_id}_{original_filename}"
+    file_path.write_bytes(await file.read())
+
+    create_job(job_id, original_filename, str(file_path))
+    process_video.delay(job_id, str(file_path))
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.get("/ingest/{job_id}")
+def get_ingest_job(job_id: str):
+    """Return the stored job record, or 404 if this job_id is unknown."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Job '{job_id}' was not found.",
+        )
+    return job
