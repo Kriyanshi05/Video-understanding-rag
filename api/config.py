@@ -9,5 +9,8 @@ class Settings(BaseSettings):
     # Runtime environment name, e.g. development or production.
     ENVIRONMENT: str = "development"
 
+    # Redis connection used by Celery as broker and result backend.
+    redis_url: str = "redis://localhost:6379/0"
+
 
 settings = Settings()
