@@ -1,9 +1,11 @@
+import mimetypes
 from pathlib import Path
 from uuid import uuid4
 
 from celery.result import AsyncResult
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from api.config import settings
@@ -18,6 +20,7 @@ from stages.celery_app import celery_app
 from stages.ingest_task import process_video
 from stages.test_task import add_numbers
 from stages.vector_store import get_qdrant_client
+from stages.url_download import download_from_url
 
 # Video formats we currently accept for ingest.
 ALLOWED_VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
@@ -80,6 +83,31 @@ async def ingest_video(file: UploadFile = File(...)):
     return {"job_id": job_id, "status": "queued"}
 
 
+class IngestUrlBody(BaseModel):
+    url: str
+
+@app.post("/ingest-url")
+def ingest_url(body: IngestUrlBody):
+    """
+    Alternative ingest method: download a video from a URL using yt-dlp,
+    then queue the exact same background job as the file upload endpoint.
+    """
+    job_id = str(uuid4())
+    uploads_dir = Path("data/raw/uploads")
+    uploads_dir.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        # Download synchronously before queuing the processing job
+        file_path, original_title = download_from_url(body.url, uploads_dir)
+    except RuntimeError as e:
+        # Pass the yt-dlp failure clearly back to the client
+        raise HTTPException(status_code=400, detail=str(e))
+        
+    create_job(job_id, original_title, str(file_path))
+    process_video.delay(job_id, str(file_path))
+    return {"job_id": job_id, "status": "queued"}
+
+
 @app.get("/ingest/{job_id}")
 def get_ingest_job(job_id: str):
     """Return the stored job record, or 404 if this job_id is unknown."""
@@ -90,6 +118,24 @@ def get_ingest_job(job_id: str):
             detail=f"Job '{job_id}' was not found.",
         )
     return job
+
+
+@app.get("/media/{job_id}")
+def get_media(job_id: str):
+    """
+    Serve the original video file for the frontend <video> element.
+    Provides the correct media_type (e.g. video/mp4) for streaming.
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    
+    file_path = Path(job["file_path"])
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Video file no longer exists on disk.")
+    
+    media_type, _ = mimetypes.guess_type(str(file_path))
+    return FileResponse(file_path, media_type=media_type or "video/mp4")
 
 
 class QueryBody(BaseModel):
