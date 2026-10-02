@@ -2,14 +2,22 @@ from pathlib import Path
 from uuid import uuid4
 
 from celery.result import AsyncResult
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from api.config import settings
+from api.gemini_client import get_gemini_client
 from api.jobs import create_job, get_job
+from retrieval.answer import (
+    answer_general_question,
+    answer_grounded_question,
+    explain_screenshot,
+)
 from stages.celery_app import celery_app
 from stages.ingest_task import process_video
 from stages.test_task import add_numbers
+from stages.vector_store import get_qdrant_client
 
 # Video formats we currently accept for ingest.
 ALLOWED_VIDEO_SUFFIXES = {".mp4", ".mov", ".mkv", ".webm"}
@@ -82,3 +90,37 @@ def get_ingest_job(job_id: str):
             detail=f"Job '{job_id}' was not found.",
         )
     return job
+
+
+class QueryBody(BaseModel):
+    question: str
+
+
+@app.post("/query/{job_id}")
+def query_video(job_id: str, body: QueryBody):
+    """Grounded RAG first; if chunks are too weak, fall back to general Gemini knowledge."""
+    qdrant = get_qdrant_client()
+    gemini = get_gemini_client()
+    result = answer_grounded_question(
+        qdrant,
+        settings.qdrant_collection,
+        job_id,
+        body.question,
+        gemini,
+    )
+    if result["mode"] == "ungrounded":
+        result = answer_general_question(body.question, gemini)
+        result["fallback_used"] = True
+    return result
+
+
+@app.post("/explain-screen")
+async def explain_screen(
+    file: UploadFile = File(...),
+    question: str | None = Form(None),
+    job_id: str | None = None,  # accepted for later video context; ignored for now
+):
+    """Multimodal frame explanation. job_id is unused until we add per-video visual context."""
+    image_bytes = await file.read()
+    gemini = get_gemini_client()
+    return explain_screenshot(image_bytes, question, gemini)
