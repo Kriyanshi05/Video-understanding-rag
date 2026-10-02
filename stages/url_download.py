@@ -13,8 +13,10 @@ def download_from_url(url: str, output_dir: Path | str) -> tuple[str, str]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     ydl_opts = {
-        # Enforce best mp4 available, or just the best format if mp4 is unavailable
-        'format': 'best[ext=mp4]/best',
+        # Fix: Enforce best combined mp4, OR merge best mp4 video and m4a audio, OR just the best format
+        # This handles YouTube videos where high-quality video and audio are stored as separate streams
+        'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        'merge_output_format': 'mp4',
         # Set output template to save inside the provided output_dir
         'outtmpl': str(output_dir / '%(id)s_%(title)s.%(ext)s'),
         # Keep logs relatively clean

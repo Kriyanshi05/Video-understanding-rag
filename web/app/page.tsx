@@ -477,7 +477,7 @@ function VideoWorkspace({ jobId }: { jobId: string }) {
             </div>
           )}
           {messages.map((msg) => (
-            <div key={msg.id} className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : "flex-row"} relative z-10 items-end`}>
+            <div key={msg.id} className={`flex gap-3 ${msg.role === "user" ? "flex-row-reverse" : "flex-row"} relative z-10 items-end group`}>
               {/* Avatar */}
               <div className={`w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center shadow-md ${
                 msg.role === "user" 
@@ -491,11 +491,20 @@ function VideoWorkspace({ jobId }: { jobId: string }) {
                 )}
               </div>
               
-              <div className={`max-w-[80%] rounded-2xl px-5 py-4 shadow-lg ${
+              <div className={`max-w-[80%] rounded-2xl px-5 py-4 shadow-lg relative ${
                 msg.role === "user" 
                   ? "bg-slate-800 border border-white/5 text-white rounded-br-sm" 
                   : "bg-slate-900/80 backdrop-blur-md border border-indigo-500/20 text-gray-200 rounded-bl-sm"
               }`}>
+                
+                {/* Copy Button */}
+                <button
+                  onClick={() => navigator.clipboard.writeText(msg.content)}
+                  className="absolute top-2 right-2 p-1.5 rounded-md bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white opacity-0 group-hover:opacity-100 transition-opacity z-20"
+                  title="Copy message"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                </button>
                 {/* Mode Badges */}
                 {msg.role === "assistant" && (msg.mode === "general_knowledge" || msg.fallback_used) && (
                   <div className="flex items-center gap-2 text-amber-300 text-[11px] uppercase tracking-wider font-semibold mb-3 bg-amber-400/10 w-fit px-3 py-1.5 rounded-md border border-amber-400/20">
@@ -521,7 +530,7 @@ function VideoWorkspace({ jobId }: { jobId: string }) {
                         h1: ({node, ...props}) => <h1 className="text-xl font-bold mt-4 mb-2" {...props} />,
                         h2: ({node, ...props}) => <h2 className="text-lg font-bold mt-4 mb-2 text-indigo-300" {...props} />,
                         h3: ({node, ...props}) => <h3 className="text-md font-bold mt-3 mb-2" {...props} />,
-                        p: ({node, ...props}) => <p className="mb-3 last:mb-0" {...props} />,
+                        p: ({node, ...props}) => <div className="mb-3 last:mb-0" {...props} />,
                         ul: ({node, ...props}) => <ul className="list-disc pl-5 mb-3 space-y-1" {...props} />,
                         ol: ({node, ...props}) => <ol className="list-decimal pl-5 mb-3 space-y-1" {...props} />,
                         strong: ({node, ...props}) => <strong className="font-semibold text-indigo-200" {...props} />,
