@@ -2,7 +2,9 @@ from io import BytesIO
 
 from PIL import Image
 
-from retrieval.search import search_chunks
+from retrieval.search import search_chunks  # dense-only; kept for direct use / testing
+from retrieval.hybrid_search import hybrid_search_chunks  # BM25 + dense via RRF
+from retrieval.reranker import rerank_chunks  # cross-encoder second-pass reranker
 
 # Below this cosine similarity, retrieved chunks are treated as not relevant.
 RELEVANCE_THRESHOLD = 0.3
@@ -49,15 +51,28 @@ def answer_grounded_question(client, collection_name, job_id, question, gemini_c
         chunks.sort(key=lambda x: x["start_time"])
         
     else:
-        # For larger videos (or 0 chunks), do a semantic search.
-        chunks = search_chunks(client, collection_name, job_id, question)
-        
-        # Only apply the similarity threshold fallback logic for videos ABOVE that chunk count
-        if not chunks or chunks[0]["score"] < RELEVANCE_THRESHOLD:
+        # STAGE 1 — HYBRID SEARCH (broad, cheap):
+        # Retrieve the top-10 candidates using hybrid search (BM25 + dense vectors via RRF).
+        # We ask for more than the final top_k (10 instead of 5) to give the reranker
+        # a wider pool to pick from — this is the standard two-stage retrieval pattern.
+        candidates = hybrid_search_chunks(client, collection_name, job_id, question, top_k=10)
+
+        # Only apply the relevance threshold fallback if no candidates came back.
+        # RRF scores are small floats (~0.016 for a strong top result).
+        if not candidates or candidates[0]["score"] < 0.01:
             return {
                 "mode": "ungrounded",
                 "reason": "no relevant content found",
             }
+
+        # STAGE 2 — CROSS-ENCODER RERANKING (narrow, accurate):
+        # The hybrid results are good but use bi-encoder / BM25 scores that evaluate
+        # query and document independently. The cross-encoder sees (query, chunk) together,
+        # so it catches subtle relevance signals the first stage can miss.
+        # rerank_chunks() gracefully falls back to the hybrid results as-is if the
+        # model failed to load, so a reranker failure never blocks the query pipeline.
+        chunks = rerank_chunks(question, candidates, top_k=5)
+
 
     context_lines = []
     for chunk in chunks:
