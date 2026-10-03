@@ -5,6 +5,7 @@ from PIL import Image
 from retrieval.search import search_chunks  # dense-only; kept for direct use / testing
 from retrieval.hybrid_search import hybrid_search_chunks  # BM25 + dense via RRF
 from retrieval.reranker import rerank_chunks  # cross-encoder second-pass reranker
+from retrieval.citation_check import verify_citations  # post-generation fact check
 
 # Below this cosine similarity, retrieved chunks are treated as not relevant.
 RELEVANCE_THRESHOLD = 0.3
@@ -126,10 +127,30 @@ def answer_grounded_question(client, collection_name, job_id, question, gemini_c
         model=GEMINI_MODEL,
         contents=prompt,
     )
+    answer_text = response.text
+
+    # CITATION VERIFICATION (hybrid-search path only):
+    # For the small-transcript path we skip verification — the full transcript was sent
+    # verbatim, so the answer is trivially grounded and a second call would add latency
+    # for negligible benefit. Verification is most valuable for the hybrid-search path
+    # where only a small subset of chunks is used and hallucination risk is higher.
+    if is_small_transcript:
+        return {
+            "mode": "grounded",
+            "answer": answer_text,
+            "sources": chunks,
+        }
+
+    # For the normal (hybrid + rerank) path, run a focused second-pass verification.
+    # verify_citations() never raises — it returns {"verified": None, ...} on any failure,
+    # so this call can never break the response returned to the user.
+    verification = verify_citations(answer_text, chunks, gemini_client)
+
     return {
         "mode": "grounded",
-        "answer": response.text,
+        "answer": answer_text,
         "sources": chunks,
+        "verification": verification,
     }
 
 

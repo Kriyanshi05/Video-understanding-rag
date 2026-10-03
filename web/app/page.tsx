@@ -31,6 +31,11 @@ interface Message {
   fallback_used?: boolean;
   is_error?: boolean;
   retry_content?: string;
+  verification?: {
+    verified: boolean | null;
+    confidence: string | null;
+    note: string;
+  };
 }
 
 // --- Helpers ---
@@ -366,6 +371,7 @@ function VideoWorkspace({ jobId }: { jobId: string }) {
         mode: data.mode,
         sources: data.sources,
         fallback_used: data.fallback_used,
+        verification: data.verification,
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -625,6 +631,30 @@ function VideoWorkspace({ jobId }: { jobId: string }) {
                         {formatTime(src.start_time)}
                       </button>
                     ))}
+                    
+                    {/* Verification Badge */}
+                    {msg.verification && msg.verification.verified !== null && (
+                      <div 
+                        className={`ml-auto flex items-center gap-1.5 px-2 py-1 rounded-md border-2 border-black font-mono font-bold text-[10px] uppercase tracking-wider shadow-[2px_2px_0px_0px_#000000] cursor-default ${
+                          msg.verification.verified && msg.verification.confidence === "high"
+                            ? "bg-green-100 text-green-900"
+                            : "bg-yellow-100 text-yellow-900"
+                        }`}
+                        title={msg.verification.note || undefined}
+                      >
+                        {msg.verification.verified && msg.verification.confidence === "high" ? (
+                          <>
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
+                            Verified
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                            Unverified — review sources
+                          </>
+                        )}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
