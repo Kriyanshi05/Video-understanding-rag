@@ -29,6 +29,8 @@ interface Message {
   mode?: "grounded" | "general_knowledge" | "visual";
   sources?: Source[];
   fallback_used?: boolean;
+  is_error?: boolean;
+  retry_content?: string;
 }
 
 // --- Helpers ---
@@ -193,6 +195,7 @@ function IngestZone({ onIngestComplete }: { onIngestComplete: (jobId: string) =>
 
 const STAGES = [
   { id: "queued", label: "Queued" },
+  { id: "downloading", label: "Downloading" },
   { id: "extracting_audio", label: "Extracting Audio" },
   { id: "transcribing", label: "Transcribing" },
   { id: "chunking", label: "Chunking" },
@@ -266,7 +269,7 @@ function ProcessingStatus({ jobId, onComplete }: { jobId: string; onComplete: ()
           const isActive = idx === activeIndex;
           
           return (
-            <div key={stage.id} className="flex flex-col items-center gap-3 relative z-10 w-24">
+                       <div key={stage.id} className="flex flex-col items-center gap-3 relative z-10 w-20 md:w-24">
               <div 
                 className={`w-10 h-10 rounded-full flex items-center justify-center transition-all duration-500 font-mono font-bold
                   ${isCompleted ? 'bg-black text-white border-2 border-black shadow-[2px_2px_0px_0px_#000000]' : 
@@ -280,7 +283,7 @@ function ProcessingStatus({ jobId, onComplete }: { jobId: string; onComplete: ()
                   <span>{idx + 1}</span>
                 )}
               </div>
-              <span className={`text-[10px] font-display font-extrabold uppercase tracking-widest text-center whitespace-nowrap transition-colors duration-300
+                          <span className={`text-[10px] font-display font-extrabold uppercase tracking-widest text-center leading-tight transition-colors duration-300
                 ${isCompleted || isActive ? 'text-black' : 'text-black/40'}
               `}>
                 {stage.label}
@@ -312,27 +315,48 @@ function VideoWorkspace({ jobId }: { jobId: string }) {
     scrollToBottom();
   }, [messages, isLoading]);
 
-  const handleSendQuery = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isLoading) return;
+  const handleSendQuery = async (e?: React.FormEvent, retryText?: string) => {
+    if (e) e.preventDefault();
+    const query = retryText || input;
+    if (!query.trim() || isLoading) return;
 
     const userMessage: Message = {
       id: Date.now().toString(),
       role: "user",
-      content: input,
+      content: query,
     };
 
     setMessages((prev) => [...prev, userMessage]);
-    setInput("");
+    if (!retryText) setInput("");
     setIsLoading(true);
 
     try {
-      const res = await fetch(`${API_BASE}/query/${jobId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: userMessage.content }),
-      });
-      if (!res.ok) throw new Error("Query failed");
+      let res;
+      try {
+        res = await fetch(`${API_BASE}/query/${jobId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: userMessage.content }),
+        });
+      } catch (networkErr) {
+        throw new Error("Having trouble reaching the server — please check your connection and try again.");
+      }
+
+      if (!res.ok) {
+        if (res.status === 429) {
+          throw new Error("The AI service is experiencing high demand right now. Please wait a moment and try again.");
+        } else if (res.status >= 500) {
+          throw new Error("Something went wrong processing that question. Please try rephrasing or try again.");
+        } else {
+          // Check if body mentions rate limit/quota
+          const text = await res.text().catch(() => "");
+          if (text.toLowerCase().includes("quota") || text.toLowerCase().includes("rate limit")) {
+             throw new Error("The AI service is experiencing high demand right now. Please wait a moment and try again.");
+          }
+          throw new Error("Sorry, I encountered an error while trying to communicate with the server.");
+        }
+      }
+      
       const data = await res.json();
 
       const assistantMessage: Message = {
@@ -345,12 +369,14 @@ function VideoWorkspace({ jobId }: { jobId: string }) {
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: "assistant",
-        content: "Sorry, I encountered an error while trying to communicate with the server.",
+        content: err.message || "Sorry, I encountered an error while trying to communicate with the server.",
+        is_error: true,
+        retry_content: userMessage.content,
       };
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
@@ -505,19 +531,23 @@ function VideoWorkspace({ jobId }: { jobId: string }) {
               <div className={`max-w-[85%] rounded-md px-5 py-4 border-2 border-black relative ${
                 msg.role === "user" 
                   ? "bg-black text-white shadow-[3px_3px_0px_0px_#666]" 
-                  : "bg-white text-black shadow-[3px_3px_0px_0px_#000000]"
+                  : msg.is_error
+                    ? "bg-[#FFF8F5] text-black border-l-8 border-l-[#FF4D00] shadow-[3px_3px_0px_0px_#000000]"
+                    : "bg-white text-black shadow-[3px_3px_0px_0px_#000000]"
               }`}>
                 
-                {/* Copy Button */}
-                <button
-                  onClick={() => navigator.clipboard.writeText(msg.content)}
-                  className={`absolute top-2 right-2 p-1.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity z-20 border-2 border-black shadow-[2px_2px_0px_0px_#000000] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0px_0px_#000000] ${
-                    msg.role === "user" ? "bg-white text-black" : "bg-white text-black"
-                  }`}
-                  title="Copy message"
-                >
-                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-                </button>
+                {/* Copy Button (Hide on errors) */}
+                {!msg.is_error && (
+                  <button
+                    onClick={() => navigator.clipboard.writeText(msg.content)}
+                    className={`absolute top-2 right-2 p-1.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity z-20 border-2 border-black shadow-[2px_2px_0px_0px_#000000] hover:translate-x-[1px] hover:translate-y-[1px] hover:shadow-[1px_1px_0px_0px_#000000] ${
+                      msg.role === "user" ? "bg-white text-black" : "bg-white text-black"
+                    }`}
+                    title="Copy message"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                  </button>
+                )}
                 
                 {/* Mode Badges */}
                 {msg.role === "assistant" && (msg.mode === "general_knowledge" || msg.fallback_used) && (
@@ -537,6 +567,24 @@ function VideoWorkspace({ jobId }: { jobId: string }) {
                 <div className="text-[15px] leading-relaxed whitespace-normal font-medium">
                   {msg.role === "user" ? (
                     <div className="font-medium font-sans">{msg.content}</div>
+                  ) : msg.is_error ? (
+                    <div>
+                      <div className="font-bold text-[#FF4D00] flex items-center gap-2 mb-2">
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        System Notice
+                      </div>
+                      <p className="font-sans text-black/90 mb-4">{msg.content}</p>
+                      {msg.retry_content && (
+                        <button 
+                          onClick={() => handleSendQuery(undefined, msg.retry_content)}
+                          disabled={isLoading}
+                          className="bg-white text-black border-2 border-black font-mono font-bold text-xs px-3 py-1.5 rounded-sm shadow-[2px_2px_0px_0px_#000000] active:translate-x-[2px] active:translate-y-[2px] active:shadow-none hover:bg-black hover:text-white transition-all flex items-center gap-1.5"
+                        >
+                          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+                          Retry Request
+                        </button>
+                      )}
+                    </div>
                   ) : (
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
