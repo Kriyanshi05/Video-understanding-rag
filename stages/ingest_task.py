@@ -11,6 +11,28 @@ from stages.transcription import transcribe_audio
 from stages.vector_store import ensure_collection, get_qdrant_client, store_chunks
 
 
+from stages.url_download import download_from_url
+
+@celery_app.task
+def process_video_from_url(job_id, url):
+    """Download video from URL non-blockingly, then process it."""
+    try:
+        update_job_status(job_id, "downloading")
+        print(f"[{job_id}] Downloading video from URL...")
+        uploads_dir = Path("data/raw/uploads")
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        file_path, original_title = download_from_url(url, uploads_dir)
+        
+        # Save the real file path and title back to the job record now that we have it
+        update_job_status(job_id, "downloading", file_path=str(file_path))
+        
+        # Continue with standard video processing pipeline
+        process_video(job_id, str(file_path))
+    except Exception as exc:
+        update_job_status(job_id, "failed", error=str(exc))
+        print(f"[{job_id}] URL download failed with error: {exc}")
+        raise exc
+
 @celery_app.task
 def process_video(job_id, file_path):
     """Extract audio, transcribe, chunk, embed, and index the video for this job."""

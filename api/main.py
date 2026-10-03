@@ -83,28 +83,25 @@ async def ingest_video(file: UploadFile = File(...)):
     return {"job_id": job_id, "status": "queued"}
 
 
+from stages.ingest_task import process_video, process_video_from_url
+
 class IngestUrlBody(BaseModel):
     url: str
 
 @app.post("/ingest-url")
 def ingest_url(body: IngestUrlBody):
     """
-    Alternative ingest method: download a video from a URL using yt-dlp,
-    then queue the exact same background job as the file upload endpoint.
+    Alternative ingest method: queue a background job to download a video from a URL using yt-dlp,
+    which then automatically continues with the standard pipeline.
     """
     job_id = str(uuid4())
-    uploads_dir = Path("data/raw/uploads")
-    uploads_dir.mkdir(parents=True, exist_ok=True)
     
-    try:
-        # Download synchronously before queuing the processing job
-        file_path, original_title = download_from_url(body.url, uploads_dir)
-    except RuntimeError as e:
-        # Pass the yt-dlp failure clearly back to the client
-        raise HTTPException(status_code=400, detail=str(e))
-        
-    create_job(job_id, original_title, str(file_path))
-    process_video.delay(job_id, str(file_path))
+    # Store initial dummy title, it will be updated if needed or we just use URL
+    create_job(job_id, body.url, "")
+    
+    # Delegate the blocking download to Celery to prevent hanging the API thread
+    process_video_from_url.delay(job_id, body.url)
+    
     return {"job_id": job_id, "status": "queued"}
 
 

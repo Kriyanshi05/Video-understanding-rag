@@ -27,11 +27,13 @@ def get_job(job_id: str) -> dict | None:
     return None
 
 
-def update_job_status(job_id: str, status: str, error: str | None = None):
+def update_job_status(job_id: str, status: str, error: str | None = None, file_path: str | None = None):
     """Reads the existing job JSON, updates the status/error fields, and writes it back."""
     job = get_job(job_id)
     if job:
         job["status"] = status
         if error is not None:
             job["error"] = error
+        if file_path is not None:
+            job["file_path"] = file_path
         redis_client.set(f"job:{job_id}", json.dumps(job))

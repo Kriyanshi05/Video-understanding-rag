@@ -1,3 +1,5 @@
+import logging
+
 # Time-based chunking is a development-speed simplification.
 # Topic-boundary-based chunking is planned for a later iteration.
 
@@ -13,11 +15,27 @@ def chunk_transcript(transcript_result, window_seconds=35):
     # Flatten word-level timestamps from every segment into one timeline.
     words = []
     for segment in segments or []:
-        for word in segment.get("words", []) or []:
+        segment_words = segment.get("words")
+        
+        # DEFENSIVE HANDLING: If a segment has no word-level timestamps (e.g. alignment failed/skipped)
+        if not segment_words:
+            logging.warning(f"Segment missing word-level timestamps, using segment fallback: {segment.get('text', '').strip()[:30]}...")
+            if "start" in segment and "end" in segment:
+                words.append({
+                    "word": segment.get("text", ""),
+                    "start": segment["start"],
+                    "end": segment["end"]
+                })
+            continue
+
+        for word in segment_words:
             if "start" in word and "end" in word:
                 words.append(word)
+            else:
+                logging.warning(f"Word missing timestamps, skipping: {word.get('word', '')}")
 
     if not words:
+        logging.warning("No words or segments found to chunk.")
         return []
 
     chunks = []
