@@ -1,13 +1,6 @@
 import logging
 from typing import Optional
 
-# --- Module-level model loading (cached for the lifetime of the worker process) ---
-#
-# WHY LOAD AT MODULE LEVEL?
-# CrossEncoder weights are ~100-400 MB on disk. If we loaded inside rerank_chunks(),
-# every single query would reload from disk. Loading once at import time means the
-# model lives in RAM and is reused across all requests in the same worker process.
-#
 # WHY A CROSS-ENCODER FOR RERANKING (AND NOT AS PRIMARY RETRIEVAL)?
 # There are two fundamentally different ways to compare a query to a document:
 #
@@ -31,23 +24,48 @@ from typing import Optional
 #             small shortlist from stage 1, picks the final top k.
 # This gives the accuracy of cross-encoders without their scalability cost.
 
-_reranker = None  # will hold the loaded CrossEncoder or None if loading failed
+_reranker = None          # Will hold the loaded CrossEncoder, None if not yet loaded,
+_reranker_load_attempted = False  # or True if a load was tried and failed.
 
-try:
-    from sentence_transformers import CrossEncoder
-    # "cross-encoder/ms-marco-MiniLM-L-6-v2" is a 6-layer MiniLM fine-tuned on
-    # MS MARCO (passage retrieval). It is small (~80 MB), CPU-friendly, and is
-    # one of the most commonly used reranking checkpoints in practice.
-    _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
-    logging.info("Reranker loaded: cross-encoder/ms-marco-MiniLM-L-6-v2")
-except Exception as e:
-    logging.warning(
-        f"Failed to load cross-encoder reranker: {e}. "
-        "Reranking will be skipped — hybrid search results will be used as-is. "
-        "This may happen on first use while model weights download, or if "
-        "sentence-transformers is not installed. The query pipeline will still work."
-    )
-    _reranker = None
+
+def get_reranker():
+    """
+    Lazy loader for the CrossEncoder reranking model.
+
+    WHY LAZY LOADING?
+    Deferring model loading reduces peak memory pressure: the Celery worker
+    imports this module on startup, but not every worker process will ever
+    handle a query that reaches the reranking stage. Loading on first use
+    spreads memory allocation over time instead of concentrating it all at
+    worker startup. The loaded model is cached in the module-level variable
+    so subsequent calls within the same worker process are instant.
+
+    Preserves the original graceful-degradation contract: if the CrossEncoder
+    weights fail to download or sentence-transformers is missing, returns None
+    and logs a warning instead of raising — so rerank_chunks() can fall back
+    to returning hybrid results unmodified.
+    """
+    global _reranker, _reranker_load_attempted
+    if _reranker_load_attempted:
+        # Already tried (and possibly failed); return whatever we have.
+        return _reranker
+    _reranker_load_attempted = True
+    try:
+        from sentence_transformers import CrossEncoder
+        # "cross-encoder/ms-marco-MiniLM-L-6-v2" is a 6-layer MiniLM fine-tuned on
+        # MS MARCO (passage retrieval). It is small (~80 MB), CPU-friendly, and is
+        # one of the most commonly used reranking checkpoints in practice.
+        _reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+        logging.info("Reranker loaded: cross-encoder/ms-marco-MiniLM-L-6-v2")
+    except Exception as e:
+        logging.warning(
+            f"Failed to load cross-encoder reranker: {e}. "
+            "Reranking will be skipped — hybrid search results will be used as-is. "
+            "This may happen on first use while model weights download, or if "
+            "sentence-transformers is not installed. The query pipeline will still work."
+        )
+        _reranker = None
+    return _reranker
 
 
 def rerank_chunks(query_text: str, chunks: list, top_k: int = 5) -> list:
@@ -77,8 +95,10 @@ def rerank_chunks(query_text: str, chunks: list, top_k: int = 5) -> list:
         List of top_k chunks, same shape as input but with "score" replaced by
         the cross-encoder relevance score. Sorted descending by relevance.
     """
+    reranker = get_reranker()
+
     # Graceful fallback: if the model isn't available, return the hybrid results as-is.
-    if _reranker is None:
+    if reranker is None:
         logging.warning("Reranker unavailable; returning hybrid search results unranked.")
         return chunks[:top_k]
 
@@ -92,7 +112,7 @@ def rerank_chunks(query_text: str, chunks: list, top_k: int = 5) -> list:
     # Batch .predict() runs all pairs through the model in a single forward pass
     # (with internal batching). Much faster than calling predict() in a loop.
     try:
-        scores = _reranker.predict(pairs)
+        scores = reranker.predict(pairs)
     except Exception as e:
         logging.warning(f"Cross-encoder prediction failed: {e}. Falling back to hybrid results.")
         return chunks[:top_k]

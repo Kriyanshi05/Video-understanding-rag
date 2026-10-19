@@ -1,9 +1,9 @@
 from qdrant_client.models import FieldCondition, Filter, MatchValue
-from stages.embedding import model
+from stages.embedding import get_embedding_model
 
 def search_chunks(client, collection_name, job_id, query_text, top_k=5):
     """Embed the query and return the nearest transcript chunks for one video."""
-    query_vector = model.encode(query_text).tolist()
+    query_vector = get_embedding_model().encode(query_text).tolist()
 
     # Filter by job_id so searching one video does not return chunks from
     # other videos that share the same Qdrant collection.

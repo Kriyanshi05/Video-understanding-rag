@@ -4,23 +4,37 @@ import logging
 _GLOBAL_MODEL = None
 _GLOBAL_MODEL_SIZE = None
 
-def transcribe_audio(audio_path, model_size="base"):
-    """Transcribe audio using WhisperX, optimized for CPU."""
-    global _GLOBAL_MODEL
-    global _GLOBAL_MODEL_SIZE
-    
-    # GLOBAL MODEL CACHING: Keep model warm in memory across requests
+
+def get_whisper_model(model_size: str = "base"):
+    """
+    Lazy loader for the WhisperX ASR model.
+
+    WHY LAZY LOADING?
+    Deferring model loading reduces peak memory pressure: the Celery worker
+    imports this module on startup, but not every worker process will ever
+    run a transcription task. Loading on first use spreads memory allocation
+    over time instead of concentrating it all at worker startup.
+    The loaded model is cached in the module-level variable so subsequent
+    calls within the same worker process are instant.
+    """
+    global _GLOBAL_MODEL, _GLOBAL_MODEL_SIZE
     if _GLOBAL_MODEL is None or _GLOBAL_MODEL_SIZE != model_size:
         logging.info(f"Loading WhisperX model '{model_size}' into global cache...")
         # int8 uses 8-bit weights: less RAM and faster CPU inference
         _GLOBAL_MODEL = whisperx.load_model(model_size, device="cpu", compute_type="int8")
         _GLOBAL_MODEL_SIZE = model_size
+    return _GLOBAL_MODEL
+
+
+def transcribe_audio(audio_path, model_size="base"):
+    """Transcribe audio using WhisperX, optimized for CPU."""
+    whisper_model = get_whisper_model(model_size)
 
     # WhisperX wants a numpy waveform, not a file path.
     audio = whisperx.load_audio(audio_path)
-    
+
     # Transcribe with a set batch_size for optimal CPU performance
-    result = _GLOBAL_MODEL.transcribe(audio, batch_size=4)
+    result = whisper_model.transcribe(audio, batch_size=4)
 
     lang_code = result.get("language", "en")
 
