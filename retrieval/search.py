@@ -1,6 +1,7 @@
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 from stages.embedding import get_embedding_model
 
+
 def search_chunks(client, collection_name, job_id, query_text, top_k=5):
     """Embed the query and return the nearest transcript chunks for one video."""
     query_vector = get_embedding_model().encode(query_text).tolist()
@@ -28,6 +29,7 @@ def search_chunks(client, collection_name, job_id, query_text, top_k=5):
                 "text": payload.get("text"),
                 "start_time": payload.get("start_time"),
                 "end_time": payload.get("end_time"),
+                "speaker": payload.get("speaker", "SPEAKER_00"),
                 "score": hit.score,
             }
         )

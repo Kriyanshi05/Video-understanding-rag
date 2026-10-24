@@ -49,18 +49,19 @@ def hybrid_search_chunks(client, collection_name, job_id, query_text, top_k=5):
     # We use text as the deduplication key because point IDs aren't returned
     # by search_chunks() — text is unique per chunk in a short video transcript.
     dense_rank = {r["text"]: idx + 1 for idx, r in enumerate(dense_results)}  # rank is 1-indexed
-    bm25_rank  = {r["text"]: idx + 1 for idx, r in enumerate(bm25_results)}
+    bm25_rank = {r["text"]: idx + 1 for idx, r in enumerate(bm25_results)}
 
     # --- Step 3: Collect all unique chunks from both lists ---
     all_chunks_by_text = {}
     for r in dense_results + bm25_results:
         key = r["text"]
         if key not in all_chunks_by_text:
-            # Store the chunk payload (text, start_time, end_time) — score will be overwritten
+            # Store the chunk payload (text, start_time, end_time, speaker) — score will be overwritten
             all_chunks_by_text[key] = {
                 "text": r["text"],
                 "start_time": r["start_time"],
                 "end_time": r["end_time"],
+                "speaker": r.get("speaker", "SPEAKER_00"),
             }
 
     # --- Step 4: Compute RRF score for every unique chunk ---
@@ -73,7 +74,7 @@ def hybrid_search_chunks(client, collection_name, job_id, query_text, top_k=5):
 
         # Contribution is 0 if the chunk didn't appear in that retriever's list at all.
         score_dense = (1 / (K + rank_d)) if rank_d is not None else 0.0
-        score_bm25  = (1 / (K + rank_b)) if rank_b is not None else 0.0
+        score_bm25 = (1 / (K + rank_b)) if rank_b is not None else 0.0
 
         rrf_scores[text] = score_dense + score_bm25
 
@@ -87,6 +88,7 @@ def hybrid_search_chunks(client, collection_name, job_id, query_text, top_k=5):
             "text": chunk["text"],
             "start_time": chunk["start_time"],
             "end_time": chunk["end_time"],
+            "speaker": chunk.get("speaker", "SPEAKER_00"),
             "score": rrf_scores[text],  # RRF score replaces raw cosine/BM25 score
         })
     return results

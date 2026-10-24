@@ -21,5 +21,8 @@ class Settings(BaseSettings):
     # Google Gemini API key used for grounded, general, and visual answers.
     gemini_api_key: str
 
+    # Hugging Face token for gated models (e.g. pyannote speaker diarization).
+    huggingface_token: str | None = None
+
 
 settings = Settings()

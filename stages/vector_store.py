@@ -35,6 +35,7 @@ def store_chunks(client, collection_name, job_id, chunks):
                     "text": chunk["text"],
                     "start_time": chunk["start_time"],
                     "end_time": chunk["end_time"],
+                    "speaker": chunk.get("speaker", "SPEAKER_00"),
                 },
             )
         )

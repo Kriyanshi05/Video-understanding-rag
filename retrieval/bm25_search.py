@@ -19,7 +19,7 @@ def bm25_search_chunks(client, collection_name, job_id, query_text, top_k=5):
     and only rebuild it when new chunks are added.
 
     Returns a list of dicts in the same shape as search_chunks():
-      [{"text": ..., "start_time": ..., "end_time": ..., "score": float}, ...]
+      [{"text": ..., "start_time": ..., "end_time": ..., "speaker": ..., "score": float}, ...]
     """
     job_filter = Filter(must=[FieldCondition(key="job_id", match=MatchValue(value=job_id))])
 
@@ -48,7 +48,6 @@ def bm25_search_chunks(client, collection_name, job_id, query_text, top_k=5):
     # BM25 needs a corpus of tokenized documents.
     payloads = [p.payload or {} for p in all_points]
     texts = [p.get("text", "") for p in payloads]
-    point_ids = [p.id for p in all_points]
 
     # Simple whitespace tokenizer — lowercase and split on spaces.
     # We deliberately avoid a heavy NLP tokenizer (NLTK, spaCy) to keep
@@ -73,6 +72,7 @@ def bm25_search_chunks(client, collection_name, job_id, query_text, top_k=5):
             "text": payload.get("text"),
             "start_time": payload.get("start_time"),
             "end_time": payload.get("end_time"),
+            "speaker": payload.get("speaker", "SPEAKER_00"),
             "score": float(score),
             "_point_id": str(point.id),  # internal key for RRF deduplication
         })

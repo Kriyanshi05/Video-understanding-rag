@@ -14,9 +14,10 @@ GEMINI_MODEL = "gemini-2.5-flash"
 
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
+
 def answer_grounded_question(client, collection_name, job_id, question, gemini_client):
     """Answer from this video's transcript chunks only (RAG). Skip Gemini if nothing is relevant."""
-    
+
     # 1) Check total chunk count for this video
     job_filter = Filter(must=[FieldCondition(key="job_id", match=MatchValue(value=job_id))])
     count_result = client.count(
@@ -38,7 +39,7 @@ def answer_grounded_question(client, collection_name, job_id, question, gemini_c
             limit=total_chunks,
             with_payload=True,
         )
-        
+
         chunks = []
         for point in scroll_res:
             payload = point.payload or {}
@@ -46,11 +47,12 @@ def answer_grounded_question(client, collection_name, job_id, question, gemini_c
                 "text": payload.get("text"),
                 "start_time": payload.get("start_time"),
                 "end_time": payload.get("end_time"),
+                "speaker": payload.get("speaker", "SPEAKER_00"),
                 "score": 1.0,  # Force a high score
             })
         # Sort chronologically for better context
         chunks.sort(key=lambda x: x["start_time"])
-        
+
     else:
         # STAGE 1 — HYBRID SEARCH (broad, cheap):
         # Retrieve the top-10 candidates using hybrid search (BM25 + dense vectors via RRF).
@@ -74,11 +76,11 @@ def answer_grounded_question(client, collection_name, job_id, question, gemini_c
         # model failed to load, so a reranker failure never blocks the query pipeline.
         chunks = rerank_chunks(question, candidates, top_k=5)
 
-
     context_lines = []
     for chunk in chunks:
+        speaker_label = chunk.get("speaker", "SPEAKER_00")
         context_lines.append(
-            f"[start_time={chunk['start_time']}s] {chunk['text']}"
+            f"[{speaker_label}] [start_time={chunk['start_time']}s] {chunk['text']}"
         )
     context = "\n".join(context_lines)
 
@@ -91,9 +93,10 @@ def answer_grounded_question(client, collection_name, job_id, question, gemini_c
         # Instead, answer fully, structured to show what's from the video vs general knowledge.
         prompt = (
             "You are an assistant answering a question about a video. "
-            "You are provided with the complete transcript of the short video below.\n\n"
+            "You are provided with the complete transcript of the short video below, including speaker labels and timestamps.\n\n"
             "Please provide a complete, useful answer in a SINGLE response. Follow these rules exactly:\n"
-            "1. First, answer using only what's in the transcript, with timestamp citations (e.g. [start_time=X]s), "
+            "1. First, answer using only what's in the transcript, with timestamp citations (e.g. [start_time=X]s) "
+            "and speaker attributions (e.g. [SPEAKER_00]) when relevant, "
             "if the transcript covers the topic at all (even partially).\n"
             "2. If the transcript's coverage is incomplete or the exact detail asked about isn't explicitly stated, "
             "continue your response with a clearly separated section headed '## Beyond This Video' that completes "
@@ -113,7 +116,7 @@ def answer_grounded_question(client, collection_name, job_id, question, gemini_c
         prompt = (
             "Answer the question using ONLY the transcript excerpts below. "
             "Do not use outside knowledge. Mention the timestamp(s) that support "
-            "your answer (the start_time labels). "
+            "your answer (the start_time labels) and attribute quotes or statements to their speaker label (e.g. [SPEAKER_00]) when relevant. "
             "Format your response cleanly in Markdown. Structure it as follows:\n"
             "- A short bolded one-line summary at the top.\n"
             "- A '## Explanation' section with the main content in clear prose or bullet points.\n"
