@@ -2,7 +2,7 @@ from retrieval.search import search_chunks
 from retrieval.bm25_search import bm25_search_chunks
 
 
-def hybrid_search_chunks(client, collection_name, job_id, query_text, top_k=5):
+def hybrid_search_chunks(client, collection_name, job_id, query_text, top_k=5, speaker=None):
     """
     Hybrid retrieval: dense (semantic) + sparse (BM25) fused with Reciprocal Rank Fusion (RRF).
 
@@ -35,14 +35,18 @@ def hybrid_search_chunks(client, collection_name, job_id, query_text, top_k=5):
     Rank is a stable, scale-free signal, which is why RRF consistently outperforms
     score fusion in benchmarks.
 
+    The optional `speaker` argument is forwarded to both sub-searches so that
+    dense (Qdrant filter) and BM25 (in-memory filter) both restrict to that speaker's
+    chunks before RRF fusion. This enables per-speaker query scoping from the frontend.
+
     Returns the top_k chunks with their RRF score as the "score" field, in the same
     shape as search_chunks() for drop-in compatibility with answer.py.
     """
     # --- Step 1: Get both ranked lists ---
     # Fetch more than top_k from each to give RRF a broader pool to merge from.
     fetch_k = max(top_k * 3, 15)
-    dense_results = search_chunks(client, collection_name, job_id, query_text, top_k=fetch_k)
-    bm25_results = bm25_search_chunks(client, collection_name, job_id, query_text, top_k=fetch_k)
+    dense_results = search_chunks(client, collection_name, job_id, query_text, top_k=fetch_k, speaker=speaker)
+    bm25_results = bm25_search_chunks(client, collection_name, job_id, query_text, top_k=fetch_k, speaker=speaker)
 
     # --- Step 2: Build rank lookup maps ---
     # Key chunks by text content (stable, human-readable key).

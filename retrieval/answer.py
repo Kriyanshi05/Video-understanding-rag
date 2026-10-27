@@ -1,4 +1,5 @@
 from io import BytesIO
+from typing import Optional
 
 from PIL import Image
 
@@ -15,11 +16,31 @@ GEMINI_MODEL = "gemini-2.5-flash"
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 
-def answer_grounded_question(client, collection_name, job_id, question, gemini_client):
-    """Answer from this video's transcript chunks only (RAG). Skip Gemini if nothing is relevant."""
+def answer_grounded_question(
+    client,
+    collection_name,
+    job_id,
+    question,
+    gemini_client,
+    speaker: Optional[str] = None,
+):
+    """Answer from this video's transcript chunks only (RAG). Skip Gemini if nothing is relevant.
 
-    # 1) Check total chunk count for this video
-    job_filter = Filter(must=[FieldCondition(key="job_id", match=MatchValue(value=job_id))])
+    When `speaker` is provided (e.g. "SPEAKER_01"), retrieval is restricted to chunks
+    from that speaker only. This is passed through from the /query/{job_id} endpoint
+    and allows the frontend speaker-filter pills to scope the AI answer to a single speaker.
+    """
+
+    # Build the Qdrant filter. When a speaker filter is active we add a second
+    # FieldCondition so Qdrant only considers chunks from that speaker.
+    filter_conditions = [FieldCondition(key="job_id", match=MatchValue(value=job_id))]
+    if speaker:
+        filter_conditions.append(
+            FieldCondition(key="speaker", match=MatchValue(value=speaker))
+        )
+    job_filter = Filter(must=filter_conditions)
+
+    # 1) Check total chunk count for this video (respecting the speaker filter if set)
     count_result = client.count(
         collection_name=collection_name,
         count_filter=job_filter,
@@ -58,7 +79,10 @@ def answer_grounded_question(client, collection_name, job_id, question, gemini_c
         # Retrieve the top-10 candidates using hybrid search (BM25 + dense vectors via RRF).
         # We ask for more than the final top_k (10 instead of 5) to give the reranker
         # a wider pool to pick from — this is the standard two-stage retrieval pattern.
-        candidates = hybrid_search_chunks(client, collection_name, job_id, question, top_k=10)
+        # Pass the speaker filter so both dense and BM25 sub-searches respect it.
+        candidates = hybrid_search_chunks(
+            client, collection_name, job_id, question, top_k=10, speaker=speaker
+        )
 
         # Only apply the relevance threshold fallback if no candidates came back.
         # RRF scores are small floats (~0.016 for a strong top result).

@@ -2,7 +2,7 @@ from rank_bm25 import BM25Okapi
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 
-def bm25_search_chunks(client, collection_name, job_id, query_text, top_k=5):
+def bm25_search_chunks(client, collection_name, job_id, query_text, top_k=5, speaker=None):
     """
     Keyword-based BM25 search over all transcript chunks for a given job.
 
@@ -10,6 +10,10 @@ def bm25_search_chunks(client, collection_name, job_id, query_text, top_k=5):
     - All chunks for this job_id are fetched from Qdrant via a scroll (no embedding needed).
     - A BM25Okapi index is built in-memory over just those chunks for this request.
     - The query is tokenized and scored against every chunk, returning the top_k results.
+
+    The optional `speaker` argument adds a Qdrant filter condition so that the scroll
+    and the resulting BM25 index only include chunks attributed to that speaker.
+    This mirrors the speaker filter in search_chunks() to keep hybrid retrieval consistent.
 
     NOTE ON IN-MEMORY INDEX:
     This rebuilds the BM25 index fresh on every request, rather than persisting it.
@@ -21,7 +25,13 @@ def bm25_search_chunks(client, collection_name, job_id, query_text, top_k=5):
     Returns a list of dicts in the same shape as search_chunks():
       [{"text": ..., "start_time": ..., "end_time": ..., "speaker": ..., "score": float}, ...]
     """
-    job_filter = Filter(must=[FieldCondition(key="job_id", match=MatchValue(value=job_id))])
+    # Build filter conditions. Always restrict by job_id; optionally also by speaker.
+    filter_conditions = [FieldCondition(key="job_id", match=MatchValue(value=job_id))]
+    if speaker:
+        filter_conditions.append(
+            FieldCondition(key="speaker", match=MatchValue(value=speaker))
+        )
+    job_filter = Filter(must=filter_conditions)
 
     # Fetch ALL chunks for this job using scroll (no vector, no semantic search).
     # We request a large limit to capture every chunk in one call.

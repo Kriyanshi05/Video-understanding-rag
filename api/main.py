@@ -137,6 +137,59 @@ def get_media(job_id: str):
 
 class QueryBody(BaseModel):
     question: str
+    # Optional speaker filter: when set (e.g. "SPEAKER_01"), the answer is grounded
+    # only in chunks from that speaker. The frontend sends the raw pyannote label here;
+    # the friendly display name ("Speaker 2") is a frontend-only mapping.
+    speaker: str | None = None
+
+
+@app.get("/speakers/{job_id}")
+def get_speakers(job_id: str):
+    """
+    Return all unique speaker labels found in this video's Qdrant chunks.
+
+    The frontend uses this to decide whether to show the speaker-filter pill row.
+    Only videos with more than one speaker will show the filter UI — single-speaker
+    videos and those without diarization data stay clean.
+
+    Response: {"speakers": ["SPEAKER_00", "SPEAKER_01", ...]}
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' was not found.")
+
+    qdrant = get_qdrant_client()
+    collection = settings.qdrant_collection
+
+    # Scroll through all chunks for this job and collect unique speaker values.
+    # We use scroll (not search) because we want every chunk, not just semantically
+    # similar ones — we're building a list, not answering a question.
+    from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+    job_filter = Filter(must=[FieldCondition(key="job_id", match=MatchValue(value=job_id))])
+    speakers: set[str] = set()
+    offset = None
+
+    while True:
+        batch, next_offset = qdrant.scroll(
+            collection_name=collection,
+            scroll_filter=job_filter,
+            limit=256,
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        for point in batch:
+            payload = point.payload or {}
+            spk = payload.get("speaker")
+            if spk:
+                speakers.add(spk)
+        if next_offset is None:
+            break
+        offset = next_offset
+
+    # Return speakers sorted for stable ordering in the UI pill row.
+    return {"speakers": sorted(speakers)}
 
 
 @app.post("/query/{job_id}")
@@ -150,6 +203,7 @@ def query_video(job_id: str, body: QueryBody):
         job_id,
         body.question,
         gemini,
+        speaker=body.speaker,  # None means "all speakers"; a raw label like "SPEAKER_01" scopes retrieval
     )
     if result["mode"] == "ungrounded":
         result = answer_general_question(body.question, gemini)

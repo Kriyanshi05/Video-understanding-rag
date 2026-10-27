@@ -22,6 +22,10 @@ interface Source {
   text: string;
   start_time: number;
   end_time: number;
+  // Speaker label in raw pyannote format (e.g. "SPEAKER_00").
+  // The friendly display name ("Speaker 1") is computed in the UI only -- we keep
+  // the raw value here so it can be sent back to the API for filtering.
+  speaker?: string;
 }
 
 interface Message {
@@ -315,6 +319,40 @@ function VideoWorkspace({ jobId }: { jobId: string }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  // ── Speaker filter state ─────────────────────────────────────────────────
+  // `speakers` holds the raw pyannote labels returned by GET /speakers/{job_id}.
+  // `activeSpeaker` is null for "All Speakers" or a raw label for a specific speaker.
+  // The friendly display names ("Speaker 1", "Speaker 2") are computed inline
+  // from the sorted index of the raw label — raw labels like SPEAKER_00 are
+  // internal pyannote identifiers and not meaningful to end users.
+  const [speakers, setSpeakers] = useState<string[]>([]);
+  const [activeSpeaker, setActiveSpeaker] = useState<string | null>(null);
+
+  // Fetch the speaker list once the workspace mounts (video is already "done").
+  useEffect(() => {
+    const fetchSpeakers = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/speakers/${jobId}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (Array.isArray(data.speakers)) {
+          setSpeakers(data.speakers);
+        }
+      } catch {
+        // Non-fatal: speaker filter simply won't appear.
+      }
+    };
+    fetchSpeakers();
+  }, [jobId]);
+
+  // Map a raw pyannote label (e.g. "SPEAKER_01") to a friendly 1-indexed name
+  // ("Speaker 2"). The mapping is derived from the sorted position in the
+  // `speakers` array so it is stable for the lifetime of the component.
+  const friendlyName = (rawLabel: string): string => {
+    const idx = speakers.indexOf(rawLabel);
+    return idx >= 0 ? `Speaker ${idx + 1}` : rawLabel;
+  };
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   };
@@ -344,7 +382,12 @@ function VideoWorkspace({ jobId }: { jobId: string }) {
         res = await fetch(`${API_BASE}/query/${jobId}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: userMessage.content }),
+          // When a speaker filter is active, include the raw label in the request
+          // body so the backend restricts retrieval to that speaker's chunks only.
+          body: JSON.stringify({
+            question: userMessage.content,
+            ...(activeSpeaker ? { speaker: activeSpeaker } : {}),
+          }),
         });
       } catch (networkErr) {
         throw new Error("Having trouble reaching the server — please check your connection and try again.");
@@ -631,7 +674,11 @@ function VideoWorkspace({ jobId }: { jobId: string }) {
                         title={src.text}
                       >
                         <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                        {formatTime(src.start_time)}
+                        {/* Show friendly speaker label next to timestamp when diarization
+                            data is available. Raw pyannote labels (SPEAKER_00 etc.) are
+                            mapped to 1-indexed names here using the same `friendlyName`
+                            helper so display names are always consistent. */}
+                        {src.speaker && speakers.length > 1 && `${friendlyName(src.speaker)} · `}{formatTime(src.start_time)}
                       </button>
                     ))}
                     
@@ -677,6 +724,41 @@ function VideoWorkspace({ jobId }: { jobId: string }) {
 
         {/* Input Area */}
         <div className="p-5 bg-white z-10">
+          {/* Speaker filter pill row — only shown when the video has multiple speakers.
+              Raw pyannote labels (SPEAKER_00 etc.) are relabelled to friendly
+              1-indexed names ("Speaker 1", "Speaker 2") for display only;
+              the raw value is what gets sent to the API. */}
+          {speakers.length > 1 && (
+            <div className="flex flex-wrap gap-2 mb-3">
+              {/* "All Speakers" pill — clears the active speaker filter */}
+              <button
+                type="button"
+                onClick={() => setActiveSpeaker(null)}
+                className={`px-3 py-1 rounded-full border-2 border-black text-xs font-mono font-bold transition-all shadow-[2px_2px_0px_0px_#000000] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none ${
+                  activeSpeaker === null
+                    ? "bg-black text-white"
+                    : "bg-white text-black hover:bg-black hover:text-white"
+                }`}
+              >
+                All Speakers
+              </button>
+              {/* One pill per detected speaker; label is friendly but filter uses raw value */}
+              {speakers.map((rawLabel) => (
+                <button
+                  key={rawLabel}
+                  type="button"
+                  onClick={() => setActiveSpeaker(rawLabel)}
+                  className={`px-3 py-1 rounded-full border-2 border-black text-xs font-mono font-bold transition-all shadow-[2px_2px_0px_0px_#000000] active:translate-x-[1px] active:translate-y-[1px] active:shadow-none ${
+                    activeSpeaker === rawLabel
+                      ? "bg-black text-white"
+                      : "bg-white text-black hover:bg-black hover:text-white"
+                  }`}
+                >
+                  {friendlyName(rawLabel)}
+                </button>
+              ))}
+            </div>
+          )}
           <form onSubmit={handleSendQuery} className="relative flex items-center">
             <input
               type="text"
