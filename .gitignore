@@ -7,3 +7,6 @@ data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 .DS_Store
+
+# === PART 3: QUERY LOGGING ===
+logs/

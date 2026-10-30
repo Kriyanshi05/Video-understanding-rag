@@ -1,8 +1,9 @@
+import hashlib
 import json
 from pathlib import Path
 
 from api.config import settings
-from api.jobs import update_job_status
+from api.jobs import get_job, redis_client, update_job_status
 from stages.audio_extraction import extract_audio
 from stages.celery_app import celery_app
 from stages.chunking import chunk_transcript
@@ -71,6 +72,24 @@ def process_video(job_id, file_path):
         store_chunks(client, settings.qdrant_collection, job_id, chunks)
 
         update_job_status(job_id, "done")
+        
+        # === PART 2: BASIC CACHING BY VIDEO ID ===
+        # When a job successfully reaches "done", cache identifier -> job_id in Redis
+        try:
+            job = get_job(job_id)
+            video_id = job.get("video_identifier") if job else None
+            if not video_id and Path(file_path).exists():
+                hasher = hashlib.sha256()
+                with open(file_path, "rb") as f:
+                    while chunk := f.read(1024 * 1024):
+                        hasher.update(chunk)
+                video_id = hasher.hexdigest()
+            if video_id:
+                redis_client.set(f"video_cache:{video_id}", job_id)
+                print(f"[{job_id}] Video cached in Redis: video_cache:{video_id} -> {job_id}")
+        except Exception as cache_err:
+            print(f"[{job_id}] Warning: Failed to write video cache to Redis: {cache_err}")
+
         print(f"[{job_id}] Processing complete! Saved to {transcript_path}")
         return {"status": "done", "job_id": job_id}
 

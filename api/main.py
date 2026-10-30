@@ -1,5 +1,8 @@
+import hashlib
 import mimetypes
+import re
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 from celery.result import AsyncResult
@@ -10,7 +13,7 @@ from pydantic import BaseModel
 
 from api.config import settings
 from api.gemini_client import get_gemini_client
-from api.jobs import create_job, get_job
+from api.jobs import create_job, get_job, redis_client
 from retrieval.answer import (
     answer_general_question,
     answer_grounded_question,
@@ -60,6 +63,31 @@ def get_test_task(task_id: str):
     return payload
 
 
+# === PART 2: BASIC CACHING BY VIDEO ID ===
+def extract_youtube_id(url: str) -> str | None:
+    """Extract YouTube video ID from various YouTube URL formats."""
+    parsed = urlparse(url)
+    hostname = parsed.netloc.lower()
+
+    if "youtube.com" in hostname:
+        query = parse_qs(parsed.query)
+        if "v" in query and query["v"]:
+            return query["v"][0]
+        parts = [p for p in parsed.path.split("/") if p]
+        if parts and parts[0] in ("embed", "v", "shorts") and len(parts) > 1:
+            return parts[1]
+    elif "youtu.be" in hostname:
+        parts = [p for p in parsed.path.split("/") if p]
+        if parts:
+            return parts[0]
+
+    match = re.search(r"(?:v=|\/|youtu\.be\/|embed\/|shorts\/)([a-zA-Z0-9_-]{11})", url)
+    if match:
+        return match.group(1)
+
+    return None
+
+
 @app.post("/ingest")
 async def ingest_video(file: UploadFile = File(...)):
     """Accept a video upload, save it to disk, and queue a background job."""
@@ -71,6 +99,22 @@ async def ingest_video(file: UploadFile = File(...)):
             detail="Filename must end in .mp4, .mov, .mkv, or .webm.",
         )
 
+    # === PART 2: BASIC CACHING BY VIDEO ID ===
+    # Compute SHA256 in chunks to hash without loading entire file into memory at once
+    hasher = hashlib.sha256()
+    while chunk := await file.read(1024 * 1024):
+        hasher.update(chunk)
+    file_hash = hasher.hexdigest()
+    await file.seek(0)
+
+    # Check Redis for a completed job with this file hash
+    cached_job_id = redis_client.get(f"video_cache:{file_hash}")
+    if cached_job_id:
+        cached_job = get_job(cached_job_id)
+        if cached_job and cached_job.get("status") == "done":
+            return {"job_id": cached_job_id, "status": "done", "cached": True}
+
+    # Job not cached: proceed with saving and queueing
     job_id = str(uuid4())
 
     uploads_dir = Path("data/raw/uploads")
@@ -78,7 +122,7 @@ async def ingest_video(file: UploadFile = File(...)):
     file_path = uploads_dir / f"{job_id}_{original_filename}"
     file_path.write_bytes(await file.read())
 
-    create_job(job_id, original_filename, str(file_path))
+    create_job(job_id, original_filename, str(file_path), video_identifier=file_hash)
     process_video.delay(job_id, str(file_path))
     return {"job_id": job_id, "status": "queued"}
 
@@ -94,12 +138,21 @@ def ingest_url(body: IngestUrlBody):
     Alternative ingest method: queue a background job to download a video from a URL using yt-dlp,
     which then automatically continues with the standard pipeline.
     """
+    # === PART 2: BASIC CACHING BY VIDEO ID ===
+    # Compute stable identifier (YouTube ID or normalized URL)
+    yt_id = extract_youtube_id(body.url)
+    identifier = yt_id if yt_id else body.url.strip()
+
+    # Check Redis for a completed job with this identifier
+    cached_job_id = redis_client.get(f"video_cache:{identifier}")
+    if cached_job_id:
+        cached_job = get_job(cached_job_id)
+        if cached_job and cached_job.get("status") == "done":
+            return {"job_id": cached_job_id, "status": "done", "cached": True}
+
+    # Job not cached: create job and queue background task
     job_id = str(uuid4())
-    
-    # Store initial dummy title, it will be updated if needed or we just use URL
-    create_job(job_id, body.url, "")
-    
-    # Delegate the blocking download to Celery to prevent hanging the API thread
+    create_job(job_id, body.url, "", video_identifier=identifier)
     process_video_from_url.delay(job_id, body.url)
     
     return {"job_id": job_id, "status": "queued"}
@@ -208,6 +261,8 @@ def query_video(job_id: str, body: QueryBody):
     if result["mode"] == "ungrounded":
         result = answer_general_question(body.question, gemini)
         result["fallback_used"] = True
+        # === PART 1: RETRIEVAL-PATH BADGE ===
+        result["retrieval_path"] = "general_knowledge"
     return result
 
 

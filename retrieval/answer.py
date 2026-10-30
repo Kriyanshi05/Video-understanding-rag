@@ -1,4 +1,8 @@
+import json
+import time
+from datetime import datetime, timezone
 from io import BytesIO
+from pathlib import Path
 from typing import Optional
 
 from PIL import Image
@@ -16,6 +20,20 @@ GEMINI_MODEL = "gemini-2.5-flash"
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 
+# === PART 3: QUERY LOGGING ===
+def _log_query(log_entry: dict):
+    """Safely append a query log record to logs/query_log.jsonl without blocking or failing execution."""
+    try:
+        log_dir = Path("logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_file = log_dir / "query_log.jsonl"
+        with log_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry) + "\n")
+    except Exception as e:
+        # Logging is purely observational and must never fail or block the query response
+        print(f"[Query Logger] Failed to write query log: {e}")
+
+
 def answer_grounded_question(
     client,
     collection_name,
@@ -30,6 +48,12 @@ def answer_grounded_question(
     from that speaker only. This is passed through from the /query/{job_id} endpoint
     and allows the frontend speaker-filter pills to scope the AI answer to a single speaker.
     """
+
+    # === PART 3: QUERY LOGGING (Start overall and retrieval timers) ===
+    total_start = time.perf_counter()
+    retrieval_start = time.perf_counter()
+    rerank_time_ms = None
+    gen_time_ms = 0.0
 
     # Build the Qdrant filter. When a speaker filter is active we add a second
     # FieldCondition so Qdrant only considers chunks from that speaker.
@@ -74,6 +98,9 @@ def answer_grounded_question(
         # Sort chronologically for better context
         chunks.sort(key=lambda x: x["start_time"])
 
+        # === PART 3: QUERY LOGGING (Record retrieval time for small-transcript path) ===
+        retrieval_time_ms = round((time.perf_counter() - retrieval_start) * 1000, 2)
+
     else:
         # STAGE 1 — HYBRID SEARCH (broad, cheap):
         # Retrieve the top-10 candidates using hybrid search (BM25 + dense vectors via RRF).
@@ -84,12 +111,30 @@ def answer_grounded_question(
             client, collection_name, job_id, question, top_k=10, speaker=speaker
         )
 
+        # === PART 3: QUERY LOGGING (Record retrieval time for hybrid search) ===
+        retrieval_time_ms = round((time.perf_counter() - retrieval_start) * 1000, 2)
+
         # Only apply the relevance threshold fallback if no candidates came back.
         # RRF scores are small floats (~0.016 for a strong top result).
         if not candidates or candidates[0]["score"] < 0.01:
+            total_time_ms = round((time.perf_counter() - total_start) * 1000, 2)
+            # === PART 3: QUERY LOGGING (Log fallback ungrounded query) ===
+            _log_query({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "job_id": job_id,
+                "question": question,
+                "retrieval_path": "general_knowledge",
+                "retrieval_time_ms": retrieval_time_ms,
+                "reranking_time_ms": None,
+                "generation_time_ms": 0.0,
+                "total_time_ms": total_time_ms,
+                "verification": None,
+            })
+            # === PART 1: RETRIEVAL-PATH BADGE ===
             return {
                 "mode": "ungrounded",
                 "reason": "no relevant content found",
+                "retrieval_path": "general_knowledge",
             }
 
         # STAGE 2 — CROSS-ENCODER RERANKING (narrow, accurate):
@@ -98,7 +143,10 @@ def answer_grounded_question(
         # so it catches subtle relevance signals the first stage can miss.
         # rerank_chunks() gracefully falls back to the hybrid results as-is if the
         # model failed to load, so a reranker failure never blocks the query pipeline.
+        # === PART 3: QUERY LOGGING (Record reranking time) ===
+        rerank_start = time.perf_counter()
         chunks = rerank_chunks(question, candidates, top_k=5)
+        rerank_time_ms = round((time.perf_counter() - rerank_start) * 1000, 2)
 
     context_lines = []
     for chunk in chunks:
@@ -150,10 +198,13 @@ def answer_grounded_question(
             f"Question: {question}"
         )
 
+    # === PART 3: QUERY LOGGING (Record generation time) ===
+    gen_start = time.perf_counter()
     response = gemini_client.models.generate_content(
         model=GEMINI_MODEL,
         contents=prompt,
     )
+    gen_time_ms = round((time.perf_counter() - gen_start) * 1000, 2)
     answer_text = response.text
 
     # CITATION VERIFICATION (hybrid-search path only):
@@ -162,22 +213,53 @@ def answer_grounded_question(
     # for negligible benefit. Verification is most valuable for the hybrid-search path
     # where only a small subset of chunks is used and hallucination risk is higher.
     if is_small_transcript:
+        total_time_ms = round((time.perf_counter() - total_start) * 1000, 2)
+        # === PART 3: QUERY LOGGING ===
+        _log_query({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "job_id": job_id,
+            "question": question,
+            "retrieval_path": "full_transcript",
+            "retrieval_time_ms": retrieval_time_ms,
+            "reranking_time_ms": None,
+            "generation_time_ms": gen_time_ms,
+            "total_time_ms": total_time_ms,
+            "verification": None,
+        })
+        # === PART 1: RETRIEVAL-PATH BADGE ===
         return {
             "mode": "grounded",
             "answer": answer_text,
             "sources": chunks,
+            "retrieval_path": "full_transcript",
         }
 
     # For the normal (hybrid + rerank) path, run a focused second-pass verification.
     # verify_citations() never raises — it returns {"verified": None, ...} on any failure,
     # so this call can never break the response returned to the user.
     verification = verify_citations(answer_text, chunks, gemini_client)
+    total_time_ms = round((time.perf_counter() - total_start) * 1000, 2)
 
+    # === PART 3: QUERY LOGGING ===
+    _log_query({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "job_id": job_id,
+        "question": question,
+        "retrieval_path": "hybrid_rerank",
+        "retrieval_time_ms": retrieval_time_ms,
+        "reranking_time_ms": rerank_time_ms,
+        "generation_time_ms": gen_time_ms,
+        "total_time_ms": total_time_ms,
+        "verification": verification,
+    })
+
+    # === PART 1: RETRIEVAL-PATH BADGE ===
     return {
         "mode": "grounded",
         "answer": answer_text,
         "sources": chunks,
         "verification": verification,
+        "retrieval_path": "hybrid_rerank",
     }
 
 
@@ -207,6 +289,8 @@ def answer_general_question(question, gemini_client):
     return {
         "mode": "general_knowledge",
         "answer": response.text,
+        # === PART 1: RETRIEVAL-PATH BADGE ===
+        "retrieval_path": "general_knowledge",
     }
 
 

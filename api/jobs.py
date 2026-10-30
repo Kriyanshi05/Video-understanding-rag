@@ -7,13 +7,16 @@ from api.config import settings
 redis_client = redis.Redis.from_url(settings.redis_url, decode_responses=True)
 
 
-def create_job(job_id: str, filename: str, file_path: str) -> dict:
+# === PART 2: BASIC CACHING BY VIDEO ID ===
+def create_job(job_id: str, filename: str, file_path: str, video_identifier: str | None = None) -> dict:
     """Register a new ingest job with status 'queued'."""
     job = {
         "status": "queued",
         "filename": filename,
         "file_path": file_path,
         "error": None,  # filled in if process_video fails
+        # === PART 2: BASIC CACHING BY VIDEO ID ===
+        "video_identifier": video_identifier,
     }
     redis_client.set(f"job:{job_id}", json.dumps(job))
     return job
