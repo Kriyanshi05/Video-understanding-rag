@@ -19,6 +19,7 @@ from retrieval.answer import (
     answer_grounded_question,
     explain_screenshot,
 )
+from retrieval.suggestions import get_suggested_questions
 from stages.celery_app import celery_app
 from stages.ingest_task import process_video
 from stages.test_task import add_numbers
@@ -243,6 +244,26 @@ def get_speakers(job_id: str):
 
     # Return speakers sorted for stable ordering in the UI pill row.
     return {"speakers": sorted(speakers)}
+
+
+@app.get("/suggestions/{job_id}")
+def get_suggestions(job_id: str):
+    """Return cached (or freshly generated) suggested questions for a video.
+
+    These are video-specific question chips shown in the empty-state chat panel.
+    If the job doesn't exist or isn't fully processed yet, we return an empty list
+    rather than an error so the frontend can treat this as a graceful no-op.
+    """
+    job = get_job(job_id)
+    if job is None or job.get("status") != "done":
+        return {"suggestions": []}
+
+    qdrant = get_qdrant_client()
+    gemini = get_gemini_client()
+    suggestions = get_suggested_questions(
+        job_id, qdrant, settings.qdrant_collection, gemini
+    )
+    return {"suggestions": suggestions}
 
 
 @app.post("/query/{job_id}")
