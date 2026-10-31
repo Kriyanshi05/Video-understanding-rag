@@ -17,6 +17,7 @@ import re
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from api.jobs import redis_client
+from retrieval.llm_utils import generate_with_retry  # transient-error retry wrapper
 
 # Gemini model used for generating suggestion chips.
 GEMINI_MODEL = "gemini-2.5-flash"
@@ -133,7 +134,8 @@ def get_suggested_questions(
     )
 
     try:
-        response = gemini_client.models.generate_content(
+        response = generate_with_retry(
+            gemini_client,
             model=GEMINI_MODEL,
             contents=prompt,
         )

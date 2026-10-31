@@ -11,6 +11,7 @@ from retrieval.search import search_chunks  # dense-only; kept for direct use / 
 from retrieval.hybrid_search import hybrid_search_chunks  # BM25 + dense via RRF
 from retrieval.reranker import rerank_chunks  # cross-encoder second-pass reranker
 from retrieval.citation_check import verify_citations  # post-generation fact check
+from retrieval.llm_utils import generate_with_retry  # transient-error retry wrapper
 
 # Below this cosine similarity, retrieved chunks are treated as not relevant.
 RELEVANCE_THRESHOLD = 0.3
@@ -200,7 +201,8 @@ def answer_grounded_question(
 
     # === PART 3: QUERY LOGGING (Record generation time) ===
     gen_start = time.perf_counter()
-    response = gemini_client.models.generate_content(
+    response = generate_with_retry(
+        gemini_client,
         model=GEMINI_MODEL,
         contents=prompt,
     )
@@ -282,7 +284,8 @@ def answer_general_question(question, gemini_client):
         "Keep it concise and well-organized.\n\n"
         f"Question: {question}"
     )
-    response = gemini_client.models.generate_content(
+    response = generate_with_retry(
+        gemini_client,
         model=GEMINI_MODEL,
         contents=prompt,
     )
@@ -305,7 +308,8 @@ def explain_screenshot(image_bytes, question, gemini_client):
     image = Image.open(BytesIO(image_bytes))
     image.load()
 
-    response = gemini_client.models.generate_content(
+    response = generate_with_retry(
+        gemini_client,
         model=GEMINI_MODEL,
         contents=[question, image],
     )

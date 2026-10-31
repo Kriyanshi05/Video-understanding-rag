@@ -1,6 +1,8 @@
 import json
 import logging
 
+from retrieval.llm_utils import generate_with_retry  # transient-error retry wrapper
+
 # The verification model: we use a lighter/faster model than the main answer model.
 # This is an intentional design choice — verification is a simpler task (yes/no JSON)
 # and using a faster model keeps the added latency minimal.
@@ -78,7 +80,8 @@ def verify_citations(answer_text: str, source_chunks: list, gemini_client) -> di
     )
 
     try:
-        response = gemini_client.models.generate_content(
+        response = generate_with_retry(
+            gemini_client,
             model=VERIFY_MODEL,
             contents=verification_prompt,
         )
